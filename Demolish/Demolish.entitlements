@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Disable App Sandbox to allow WKWebView network access -->
+	<!-- For a browser app, we need full network access and process creation -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	
+	<!-- Allow outgoing network connections -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	
+	<!-- Allow incoming network connections (for local servers, etc.) -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>
+
