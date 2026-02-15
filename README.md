@@ -71,22 +71,28 @@ Demolish is designed for developers, researchers, and power users who need to wo
 ### Project Structure
 
 ```
-Demolish/
-├── DemolishApp.swift              # App entry point
-├── ContentView.swift               # Main view managing panes and layouts
-├── BrowserPaneView.swift           # Individual pane UI with toolbar
-├── BrowserPaneViewModel.swift      # View model managing isolated WKWebView
-├── WebViewWrapper.swift            # SwiftUI wrapper for WKWebView
-├── PaneContainerView.swift         # Container with drag/resize handles
-├── PaneFrameManager.swift          # Manages pane positions and sizes
-├── SettingsDrawer.swift            # Settings panel UI
-├── WindowConfiguration.swift       # Custom window title bar setup
-├── CursorHighlightManager.swift    # Cursor tracking and highlighting
-├── CursorHighlightOverlay.swift    # Visual cursor highlight overlay
-├── DragHandleView.swift            # Drag handle component
-├── ResizeHandleView.swift          # Resize handle component
-├── TooltipView.swift               # Tooltip component
-└── PaneTransitionEffect.swift      # Layout transition animations
+Demolish/                          # Repo root
+├── README.md
+├── Demolish.xcodeproj/
+├── Demolish/                      # App source
+│   ├── DemolishApp.swift          # App entry point
+│   ├── ContentView.swift         # Main view managing panes and layouts
+│   ├── BrowserPaneView.swift     # Individual pane UI with toolbar
+│   ├── BrowserPaneViewModel.swift # View model managing isolated WKWebView
+│   ├── WebViewWrapper.swift      # SwiftUI wrapper for WKWebView
+│   ├── PaneContainerView.swift   # Container with drag/resize handles
+│   ├── PaneFrameManager.swift    # Manages pane positions and sizes
+│   ├── SettingsDrawer.swift      # Settings panel UI
+│   ├── WindowConfiguration.swift # Custom window title bar setup
+│   ├── CursorHighlightManager.swift
+│   ├── CursorHighlightOverlay.swift
+│   ├── DragHandleView.swift
+│   ├── ResizeHandleView.swift
+│   ├── TooltipView.swift
+│   ├── PaneTransitionEffect.swift
+│   └── Assets.xcassets/
+├── DemolishTests/
+└── DemolishUITests/
 ```
 
 ### Key Components
