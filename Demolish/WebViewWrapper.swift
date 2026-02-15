@@ -8,7 +8,7 @@
 import SwiftUI
 import AppKit
 import OSLog
-internal import WebKit
+import WebKit
 
 // Custom wrapper to ensure mouse events work properly
 // This wrapper is completely transparent to mouse events - all events pass through to the web view
@@ -104,6 +104,8 @@ struct WebViewWrapper: NSViewRepresentable {
             // Remove old handler first if it exists, then add new one
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "consoleLog")
             webView.configuration.userContentController.add(context.coordinator, name: "consoleLog")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "urlChanged")
+            webView.configuration.userContentController.add(context.coordinator, name: "urlChanged")
         } else {
             // Create a new web view instance
             webView = WKWebView(frame: .zero, configuration: viewModel.webViewConfiguration)
@@ -118,6 +120,7 @@ struct WebViewWrapper: NSViewRepresentable {
             
             // Register message handler for console logging
             webView.configuration.userContentController.add(context.coordinator, name: "consoleLog")
+            webView.configuration.userContentController.add(context.coordinator, name: "urlChanged")
             
             viewModel.setWebView(webView)
         }
@@ -166,9 +169,18 @@ struct WebViewWrapper: NSViewRepresentable {
     
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         let viewModel: BrowserPaneViewModel
-        
+        /// Timeout (seconds) after which the reload button reverts to refresh icon if load never finishes.
+        private static let loadingTimeout: TimeInterval = 15.0
+        private var loadingTimeoutTimer: Timer?
+
         init(viewModel: BrowserPaneViewModel) {
             self.viewModel = viewModel
+        }
+
+        private func clearLoadingState() {
+            loadingTimeoutTimer?.invalidate()
+            loadingTimeoutTimer = nil
+            viewModel.clearLoadingState()
         }
         
         // MARK: - WKScriptMessageHandler
@@ -236,6 +248,12 @@ struct WebViewWrapper: NSViewRepresentable {
                     // Log raw message if parsing fails
                     print("[JS Console] Failed to parse message: \(message.body)")
                 }
+            } else if message.name == "urlChanged" {
+                if let urlString = message.body as? String, !urlString.isEmpty {
+                    DispatchQueue.main.async {
+                        self.viewModel.updateCurrentURL(urlString)
+                    }
+                }
             }
         }
         
@@ -243,13 +261,19 @@ struct WebViewWrapper: NSViewRepresentable {
         
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             DispatchQueue.main.async {
+                self.loadingTimeoutTimer?.invalidate()
                 self.viewModel.isLoading = true
+                self.loadingTimeoutTimer = Timer.scheduledTimer(withTimeInterval: Self.loadingTimeout, repeats: false) { [weak self] _ in
+                    DispatchQueue.main.async {
+                        self?.clearLoadingState()
+                    }
+                }
             }
         }
-        
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             DispatchQueue.main.async {
-                self.viewModel.isLoading = false
+                self.clearLoadingState()
                 self.viewModel.updateNavigationState()
                 // Reapply zoom after navigation to ensure it persists
                 self.viewModel.applyZoomSetting()
@@ -257,10 +281,17 @@ struct WebViewWrapper: NSViewRepresentable {
                 self.injectDragAndDropEnhancement(webView: webView)
             }
         }
-        
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             DispatchQueue.main.async {
-                self.viewModel.isLoading = false
+                self.clearLoadingState()
+                self.viewModel.updateNavigationState()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            DispatchQueue.main.async {
+                self.clearLoadingState()
                 self.viewModel.updateNavigationState()
             }
         }
@@ -271,6 +302,25 @@ struct WebViewWrapper: NSViewRepresentable {
                 // Reapply zoom when page commits to ensure it persists
                 self.viewModel.applyZoomSetting()
             }
+        }
+        
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            DispatchQueue.main.async {
+                if let urlString = webView.url?.absoluteString, !urlString.isEmpty {
+                    self.viewModel.updateCurrentURL(urlString)
+                }
+            }
+        }
+        
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.targetFrame?.isMainFrame != false,
+               let urlString = navigationAction.request.url?.absoluteString,
+               !urlString.isEmpty {
+                DispatchQueue.main.async {
+                    self.viewModel.updateCurrentURL(urlString)
+                }
+            }
+            decisionHandler(.allow)
         }
         
         // MARK: - Drag and Drop Enhancement
@@ -301,6 +351,14 @@ struct WebViewWrapper: NSViewRepresentable {
                     print("Error injecting console logging: \(error.localizedDescription)")
                 }
             }
+            
+            // Ensure URL monitoring is active (for SPAs and history changes)
+            let urlScript = BrowserPaneViewModel.getURLChangeMonitoringScript()
+            webView.evaluateJavaScript(urlScript) { result, error in
+                if let error = error {
+                    print("Error injecting URL monitoring: \(error.localizedDescription)")
+                }
+            }
         }
         
         // MARK: - WKUIDelegate
@@ -309,6 +367,11 @@ struct WebViewWrapper: NSViewRepresentable {
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             // Load the link in the same web view instead of opening a new window
             if navigationAction.targetFrame == nil {
+                if let urlString = navigationAction.request.url?.absoluteString, !urlString.isEmpty {
+                    DispatchQueue.main.async {
+                        self.viewModel.updateCurrentURL(urlString)
+                    }
+                }
                 webView.load(navigationAction.request)
             }
             return nil

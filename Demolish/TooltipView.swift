@@ -11,6 +11,7 @@ struct TooltipModifier: ViewModifier {
     let text: String
     let delay: TimeInterval
     let position: TooltipPosition
+    let verticalOffset: CGFloat
     
     enum TooltipPosition {
         case top
@@ -39,9 +40,9 @@ struct TooltipModifier: ViewModifier {
                                 .stroke(Color.white.opacity(0.2), lineWidth: 1)
                         )
                         .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
-                        .offset(y: position == .top ? -8 : 28)
+                        .offset(y: (position == .top ? -8 : 43) + verticalOffset)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                        .zIndex(999999)
+                        .zIndex(Double.greatestFiniteMagnitude)
                         .allowsHitTesting(false)
                         .compositingGroup()
                 }
@@ -70,8 +71,8 @@ struct TooltipModifier: ViewModifier {
 }
 
 extension View {
-    func tooltip(_ text: String, delay: TimeInterval = 0.5, position: TooltipModifier.TooltipPosition = .top) -> some View {
-        modifier(TooltipModifier(text: text, delay: delay, position: position))
+    func tooltip(_ text: String, delay: TimeInterval = 0.5, position: TooltipModifier.TooltipPosition = .top, verticalOffset: CGFloat = 0) -> some View {
+        modifier(TooltipModifier(text: text, delay: delay, position: position, verticalOffset: verticalOffset))
     }
 }
 

@@ -268,8 +268,14 @@ private struct WindowConfigurationHelper: NSViewRepresentable {
         // Ensure the content view can receive mouse events in the title bar area
         // This is critical to allow our custom buttons to be clickable
         if let contentView = window.contentView {
-            // Make sure the content view accepts first responder for mouse events
-            contentView.acceptsTouchEvents = true
+            // Note: acceptsTouchEvents is deprecated, but we'll keep it for compatibility
+            // The default behavior should work for mouse events
+            if #available(macOS 10.12.2, *) {
+                // Use allowedTouchTypes for newer macOS versions if needed
+                // For now, mouse events should work without this
+            } else {
+                contentView.acceptsTouchEvents = true
+            }
         }
         
         // Store configuration in user defaults to persist across app launches

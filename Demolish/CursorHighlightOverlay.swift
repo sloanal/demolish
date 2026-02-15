@@ -52,7 +52,7 @@ struct CursorHighlightOverlay: View {
                 stopTracking()
                 restoreCursor()
             }
-            .onChange(of: manager.isEnabled) { oldValue, newValue in
+            .onChange(of: manager.isEnabled) { newValue in
                 if manager.isEnabled {
                     startTracking()
                 } else {
@@ -60,7 +60,7 @@ struct CursorHighlightOverlay: View {
                 }
                 updateCursorVisibility()
             }
-            .onChange(of: manager.hideCursor) { oldValue, newValue in
+            .onChange(of: manager.hideCursor) { newValue in
                 updateCursorVisibility()
             }
         }

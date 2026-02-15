@@ -6,11 +6,11 @@
 //
 
 import SwiftUI
-@_implementationOnly internal import WebKit
+import WebKit
 import Combine
 
 // Zoom setting enum for content size control
-enum ZoomSetting: String, CaseIterable {
+enum ZoomSetting: String, CaseIterable, Codable {
     case outMore = "Out More"
     case out = "Out"
     case none = "None"
@@ -31,6 +31,98 @@ enum ZoomSetting: String, CaseIterable {
         case .`in`: return 1.4
         case .inMore: return 1.8
         }
+    }
+}
+
+enum LoginAutofillResult {
+    case success
+    case noLoginFields
+    case noWebView
+    case scriptError(String)
+}
+
+struct SavedLogin: Identifiable, Codable, Equatable {
+    let id: UUID
+    var label: String
+    var username: String
+    var password: String
+    var createdAt: Date
+    
+    var displayName: String {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLabel.isEmpty {
+            return trimmedLabel
+        }
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedUsername.isEmpty ? "Login" : trimmedUsername
+    }
+}
+
+final class LoginCredentialStore: ObservableObject {
+    static let shared = LoginCredentialStore()
+    
+    @Published private(set) var logins: [SavedLogin] = []
+    
+    private let storageKey = "savedLoginCredentials"
+    
+    private init() {
+        load()
+    }
+    
+    func add(label: String, username: String, password: String) {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let passwordCheck = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty, !passwordCheck.isEmpty else {
+            return
+        }
+        
+        let login = SavedLogin(
+            id: UUID(),
+            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+            username: trimmedUsername,
+            password: password,
+            createdAt: Date()
+        )
+        logins.insert(login, at: 0)
+        persist()
+    }
+    
+    func update(id: UUID, label: String, username: String, password: String) {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let passwordCheck = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty, !passwordCheck.isEmpty else {
+            return
+        }
+        
+        guard let index = logins.firstIndex(where: { $0.id == id }) else { return }
+        let existing = logins[index]
+        logins[index] = SavedLogin(
+            id: existing.id,
+            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+            username: trimmedUsername,
+            password: password,
+            createdAt: existing.createdAt
+        )
+        persist()
+    }
+    
+    func remove(id: UUID) {
+        logins.removeAll { $0.id == id }
+        persist()
+    }
+    
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(logins) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+    
+    private func load() {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let saved = try? JSONDecoder().decode([SavedLogin].self, from: data) else {
+            logins = []
+            return
+        }
+        logins = saved
     }
 }
 
@@ -87,6 +179,11 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
             objectWillChange.send()
         }
     }
+    @Published var isLoginSectionExpanded: Bool = false {
+        willSet {
+            objectWillChange.send()
+        }
+    }
     
     // Available border colors
     static let borderColors: [Color] = [
@@ -107,6 +204,11 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
     // Store the last loaded URL to restore if web view is recreated
     private var lastLoadedURL: String?
     
+    // KVO observers for web view navigation state
+    private var urlObservation: NSKeyValueObservation?
+    private var canGoBackObservation: NSKeyValueObservation?
+    private var canGoForwardObservation: NSKeyValueObservation?
+    
     init() {
         self.id = UUID()
         // Create a non-persistent (ephemeral) data store for this pane
@@ -119,10 +221,12 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
         self.webViewConfiguration.websiteDataStore = dataStore
         
         // Enable JavaScript for proper click event handling
+        // Note: javaScriptEnabled is deprecated, but we'll keep it for compatibility
+        // The default is true, so this line is mainly for clarity
         self.webViewConfiguration.preferences.javaScriptEnabled = true
         
-        // Additional configuration for better isolation
-        self.webViewConfiguration.processPool = WKProcessPool() // Separate process pool per pane
+        // Note: processPool is deprecated in macOS 12.0+ as multiple instances no longer have effect
+        // We'll remove this for macOS 12.0+ compatibility
         
         // Add drag and drop enhancement script to user content controller
         let dragDropScript = BrowserPaneViewModel.getDragAndDropEnhancementScript()
@@ -133,10 +237,16 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
         let consoleLogScript = BrowserPaneViewModel.getConsoleLoggingScript()
         let consoleUserScript = WKUserScript(source: consoleLogScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         self.webViewConfiguration.userContentController.addUserScript(consoleUserScript)
+        
+        // Add URL monitoring script to track SPA and history changes
+        let urlMonitoringScript = BrowserPaneViewModel.getURLChangeMonitoringScript()
+        let urlUserScript = WKUserScript(source: urlMonitoringScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        self.webViewConfiguration.userContentController.addUserScript(urlUserScript)
     }
     
     func setWebView(_ webView: WKWebView) {
         self.webView = webView
+        startObservingWebView(webView)
         
         // Apply the current zoom setting to the web view
         applyZoomSetting()
@@ -210,9 +320,8 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
             urlString = "https://\(urlString)"
         }
         
-        // Store the URL for potential restoration
-        lastLoadedURL = urlString
-        currentURL = urlString
+        // Store the URL for potential restoration and update the URL bar
+        updateCurrentURL(urlString)
         
         guard let webView = webView else { return }
         guard let url = URL(string: urlString) else { return }
@@ -222,11 +331,23 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
     }
     
     func goBack() {
-        webView?.goBack()
+        guard let webView = webView else { return }
+        if webView.canGoBack {
+            webView.goBack()
+        } else if let backItem = webView.backForwardList.backItem {
+            webView.go(to: backItem)
+        }
+        refreshBackForwardState()
     }
     
     func goForward() {
-        webView?.goForward()
+        guard let webView = webView else { return }
+        if webView.canGoForward {
+            webView.goForward()
+        } else if let forwardItem = webView.backForwardList.forwardItem {
+            webView.go(to: forwardItem)
+        }
+        refreshBackForwardState()
     }
     
     func reload() {
@@ -236,6 +357,48 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
     func stop() {
         webView?.stopLoading()
     }
+
+    /// Clears loading state and notifies observers so the reload button icon updates.
+    /// Call from the main queue (e.g. from WKNavigationDelegate).
+    func clearLoadingState() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.clearLoadingState() }
+            return
+        }
+        guard isLoading else { return }
+        objectWillChange.send()
+        isLoading = false
+    }
+    
+    func autofillLogin(_ login: SavedLogin, completion: @escaping (LoginAutofillResult) -> Void) {
+        guard let webView = webView else {
+            completion(.noWebView)
+            return
+        }
+        
+        let script = BrowserPaneViewModel.getLoginAutofillScript(username: login.username, password: login.password)
+        webView.evaluateJavaScript(script) { result, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(.scriptError(error.localizedDescription))
+                    return
+                }
+                
+                if let dict = result as? [String: Any],
+                   let success = dict["success"] as? Bool {
+                    completion(success ? .success : .noLoginFields)
+                    return
+                }
+                
+                if let success = result as? Bool {
+                    completion(success ? .success : .noLoginFields)
+                    return
+                }
+                
+                completion(.noLoginFields)
+            }
+        }
+    }
     
     func updateNavigationState() {
         guard let webView = webView else { return }
@@ -243,11 +406,243 @@ class BrowserPaneViewModel: ObservableObject, Identifiable {
         canGoForward = webView.canGoForward
         // Only update currentURL if web view has a URL, otherwise preserve existing value
         if let webViewURL = webView.url?.absoluteString, !webViewURL.isEmpty {
-            currentURL = webViewURL
+            updateCurrentURL(webViewURL)
         } else if currentURL.isEmpty, let lastURL = lastLoadedURL {
             // If currentURL is empty but we have a lastLoadedURL, use that
             currentURL = lastURL
         }
+    }
+    
+    private func startObservingWebView(_ webView: WKWebView) {
+        urlObservation?.invalidate()
+        canGoBackObservation?.invalidate()
+        canGoForwardObservation?.invalidate()
+        
+        urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
+            guard let self = self else { return }
+            let urlString = webView.url?.absoluteString ?? ""
+            guard !urlString.isEmpty else { return }
+            if urlString == "about:blank" {
+                return
+            }
+            DispatchQueue.main.async {
+                self.updateCurrentURL(urlString)
+            }
+        }
+        
+        canGoBackObservation = webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
+            DispatchQueue.main.async {
+                self?.canGoBack = webView.canGoBack
+            }
+        }
+        
+        canGoForwardObservation = webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] webView, _ in
+            DispatchQueue.main.async {
+                self?.canGoForward = webView.canGoForward
+            }
+        }
+    }
+    
+    func updateCurrentURL(_ urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if trimmed == "about:blank" {
+            return
+        }
+        if currentURL != trimmed {
+            currentURL = trimmed
+        }
+        lastLoadedURL = trimmed
+        refreshBackForwardState()
+    }
+    
+    private func refreshBackForwardState() {
+        guard let webView = webView else { return }
+        let updateState = {
+            self.canGoBack = webView.canGoBack || webView.backForwardList.backItem != nil
+            self.canGoForward = webView.canGoForward || webView.backForwardList.forwardItem != nil
+        }
+        if Thread.isMainThread {
+            updateState()
+        } else {
+            DispatchQueue.main.async {
+                updateState()
+            }
+        }
+    }
+    
+    // MARK: - URL Monitoring
+    
+    /// Returns JavaScript code that reports URL changes from SPA/history APIs
+    static func getURLChangeMonitoringScript() -> String {
+        return """
+        (function() {
+            'use strict';
+            
+            if (window.__demolishURLMonitor) {
+                return;
+            }
+            window.__demolishURLMonitor = true;
+            
+            function notify() {
+                try {
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.urlChanged) {
+                        window.webkit.messageHandlers.urlChanged.postMessage(window.location.href);
+                    }
+                } catch (e) {
+                    // Ignore reporting errors
+                }
+            }
+            
+            const originalPushState = history.pushState;
+            history.pushState = function() {
+                const result = originalPushState.apply(this, arguments);
+                notify();
+                return result;
+            };
+            
+            const originalReplaceState = history.replaceState;
+            history.replaceState = function() {
+                const result = originalReplaceState.apply(this, arguments);
+                notify();
+                return result;
+            };
+            
+            window.addEventListener('popstate', notify);
+            window.addEventListener('hashchange', notify);
+            
+            notify();
+        })();
+        """
+    }
+
+    // MARK: - Login Autofill
+    
+    private static func escapeJavaScriptString(_ value: String) -> String {
+        var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+        escaped = escaped.replacingOccurrences(of: "'", with: "\\'")
+        escaped = escaped.replacingOccurrences(of: "\n", with: "\\n")
+        escaped = escaped.replacingOccurrences(of: "\r", with: "\\r")
+        escaped = escaped.replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+        escaped = escaped.replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        return escaped
+    }
+    
+    private static func getLoginAutofillScript(username: String, password: String) -> String {
+        let safeUsername = escapeJavaScriptString(username)
+        let safePassword = escapeJavaScriptString(password)
+        
+        return """
+        (function() {
+            'use strict';
+            
+            function isVisible(el) {
+                if (!el) { return false; }
+                const rect = el.getBoundingClientRect();
+                return !!(rect.width || rect.height || el.getClientRects().length);
+            }
+            
+            function isEditableInput(el) {
+                if (!el) { return false; }
+                if (el.disabled || el.readOnly) { return false; }
+                const type = (el.getAttribute('type') || 'text').toLowerCase();
+                if (type === 'hidden') { return false; }
+                return isVisible(el);
+            }
+            
+            function tokenMatches(value, tokens) {
+                if (!value) { return false; }
+                const lower = value.toLowerCase();
+                return tokens.some(token => lower.includes(token));
+            }
+            
+            function scoreField(el) {
+                let score = 0;
+                const type = (el.getAttribute('type') || 'text').toLowerCase();
+                const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+                const name = (el.getAttribute('name') || '').toLowerCase();
+                const id = (el.getAttribute('id') || '').toLowerCase();
+                const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                
+                if (type === 'email') { score += 6; }
+                if (autocomplete.includes('username')) { score += 8; }
+                if (autocomplete.includes('email')) { score += 6; }
+                if (tokenMatches(name, ['user', 'login', 'email'])) { score += 5; }
+                if (tokenMatches(id, ['user', 'login', 'email'])) { score += 4; }
+                if (tokenMatches(placeholder, ['user', 'email', 'login'])) { score += 3; }
+                
+                if (tokenMatches(name, ['search', 'filter', 'query'])) { score -= 6; }
+                if (tokenMatches(id, ['search', 'filter', 'query'])) { score -= 6; }
+                if (tokenMatches(placeholder, ['search', 'filter', 'query'])) { score -= 6; }
+                
+                if (type === 'password') { score = -100; }
+                return score;
+            }
+            
+            function chooseUsernameField(root, allowFallback) {
+                if (!root || !root.querySelectorAll) { return null; }
+                const inputs = Array.from(root.querySelectorAll('input'))
+                    .filter(isEditableInput)
+                    .filter(el => (el.getAttribute('type') || 'text').toLowerCase() !== 'password');
+                if (!inputs.length) { return null; }
+                let best = null;
+                let bestScore = -Infinity;
+                inputs.forEach(el => {
+                    const score = scoreField(el);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = el;
+                    }
+                });
+                if (bestScore < 1) { return allowFallback ? inputs[0] : null; }
+                return best;
+            }
+            
+            function setNativeValue(el, value) {
+                const valueSetter = Object.getOwnPropertyDescriptor(el.__proto__, 'value')?.set;
+                const prototypeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                if (prototypeSetter && valueSetter !== prototypeSetter) {
+                    prototypeSetter.call(el, value);
+                } else if (valueSetter) {
+                    valueSetter.call(el, value);
+                } else {
+                    el.value = value;
+                }
+            }
+            
+            function setValue(el, value) {
+                el.focus();
+                setNativeValue(el, value);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Unidentified' }));
+            }
+            
+            const usernameValue = '\(safeUsername)';
+            const passwordValue = '\(safePassword)';
+            
+            const passwordFields = Array.from(document.querySelectorAll('input[type="password"]'))
+                .filter(isEditableInput);
+            if (!passwordFields.length) {
+                return { success: false, reason: 'password_not_found' };
+            }
+            
+            const passwordField = passwordFields[0];
+            const formScope = passwordField.form || passwordField.closest('form') || passwordField.closest('fieldset') || passwordField.closest('div') || document;
+            let usernameField = chooseUsernameField(formScope, formScope !== document);
+            if (!usernameField && formScope !== document) {
+                usernameField = chooseUsernameField(document, false);
+            }
+            
+            if (!usernameField) {
+                return { success: false, reason: 'username_not_found' };
+            }
+            
+            setValue(usernameField, usernameValue);
+            setValue(passwordField, passwordValue);
+            return { success: true };
+        })();
+        """
     }
     
     // MARK: - Drag and Drop Enhancement

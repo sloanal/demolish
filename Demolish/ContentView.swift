@@ -7,9 +7,9 @@
 
 import SwiftUI
 import AppKit
-internal import WebKit
+import WebKit
 
-enum DisplayConfiguration: String, Equatable {
+enum DisplayConfiguration: String, Codable, Equatable {
     case manual
     case tiled
     case focused
@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var panes: [BrowserPaneViewModel] = []
     @StateObject private var frameManager = PaneFrameManager()
     @StateObject private var cursorHighlightManager = CursorHighlightManager()
+    @StateObject private var demoStore = DemoStore()
     @State private var containerSize: CGSize = .zero
     @State private var isSettingsDrawerOpen = false
     @State private var isAddButtonHovered = false
@@ -31,10 +32,15 @@ struct ContentView: View {
     @State private var draggingPaneID: UUID? = nil // Track which pane is being dragged
     @State private var dragOffset: CGSize = .zero // Local drag offset for immediate feedback
     @State private var dragStartFrame: CGRect? = nil // Store frame at drag start
+    @State private var autoCloseSettingsMenu: Bool = true
+    @State private var settingsAutoCloseWorkItem: DispatchWorkItem? = nil
+    @State private var isMouseInSettingsDrawer: Bool = false
+    @State private var isApplyingDemo: Bool = false
     @Namespace private var paneNamespace
     private let maxPanes = 4
     private let panePadding: CGFloat = 16
     private let settingsDrawerHeight: CGFloat = 40
+    private let settingsAutoCloseDelay: TimeInterval = 15
     
     var body: some View {
         ZStack(alignment: .top) {
@@ -52,56 +58,7 @@ struct ContentView: View {
                     
                     ForEach(Array(orderedPaneList.enumerated()), id: \.element.id) { index, pane in
                         if let paneFrame = frameManager.frames[pane.id] {
-                            let targetPosition = CGPoint(x: paneFrame.frame.midX, y: paneFrame.frame.midY)
-                            // All panes maintain consistent size - no depth scaling
-                            // Scale is only used during carousel transitions for visual effect
-                            let depthScale: CGFloat = 1.0
-                            
-                            // Apply 3D rotation and Z-axis stacking for rotated3D configuration
-                            let rotationAngle: Double = displayConfiguration == .rotated3D ? -30 : 0
-                            
-                            // Calculate Z-axis depth for stacking (front pane is at 0, others go back)
-                            // Scale difference for depth perception
-                            let zDepthScale: CGFloat = displayConfiguration == .rotated3D 
-                                ? 1.0 - (CGFloat(index) * 0.08)  // Each pane behind is 8% smaller
-                                : 1.0
-                            
-                            paneView(for: pane, frame: paneFrame.frame, zIndex: index, totalPanes: orderedPaneList.count)
-                                // Explicit offset ensures translate animation is always visible
-                                // X offset is already built into the frame position in rotated3D mode
-                                .offset(
-                                    x: targetPosition.x - geometry.size.width / 2 + (draggingPaneID == pane.id ? dragOffset.width : 0),
-                                    y: targetPosition.y - geometry.size.height / 2 + (draggingPaneID == pane.id ? dragOffset.height : 0)
-                                )
-                                // Apply depth-based scale for 3D stacking effect (more dramatic)
-                                .scaleEffect(displayConfiguration == .rotated3D ? zDepthScale : depthScale)
-                                // Apply 3D rotation about Y axis (-30 degrees for rotated3D mode)
-                                .rotation3DEffect(
-                                    .degrees(rotationAngle),
-                                    axis: (x: 0, y: 1, z: 0),
-                                    anchor: .center,
-                                    perspective: 0.6  // Perspective for depth
-                                )
-                                // Use zIndex to control rendering order (higher zIndex renders on top)
-                                // This makes the front pane (index 0) render above others
-                                .zIndex(Double(orderedPaneList.count - index))
-                                // Opacity difference for depth perception
-                                .opacity(displayConfiguration == .rotated3D 
-                                    ? (1.0 - CGFloat(index) * 0.08)
-                                    : displayConfiguration == .layered
-                                    ? (1.0 - CGFloat(index) * 0.08)
-                                    : displayConfiguration == .focused
-                                    ? (index == 0 ? 1.0 : 0.7)  // Primary pane full opacity, secondary panes reduced
-                                    : 1.0)
-                                // Add subtle 3D rotation via GeometryEffect
-                                .modifier(
-                                    PaneCarouselEffect(
-                                        position: .zero, // Position handled by offset
-                                        scale: displayConfiguration == .rotated3D ? zDepthScale : depthScale,
-                                        zIndex: index,
-                                        totalPanes: orderedPaneList.count
-                                    )
-                                )
+                            paneLayer(index: index, pane: pane, geometry: geometry)
                         }
                     }
                 }
@@ -113,7 +70,7 @@ struct ContentView: View {
                         applyCurrentDisplayConfiguration(in: geometry.size)
                     }
                 }
-                .onChange(of: geometry.size) { oldSize, newSize in
+                .onChange(of: geometry.size) { newSize in
                     containerSize = newSize
                     if displayConfiguration == .manual {
                         // For a single pane, always arrange it to fill the space
@@ -127,7 +84,10 @@ struct ContentView: View {
                         applyCurrentDisplayConfiguration(in: newSize)
                     }
                 }
-                .onChange(of: panes.count) { oldCount, newCount in
+                .onChange(of: panes.count) { newCount in
+                    if isApplyingDemo {
+                        return
+                    }
                     syncPaneOrderWithPanes()
                     // Only initialize frames if we have a valid geometry size
                     guard geometry.size.width > 0, geometry.size.height > 0 else { return }
@@ -158,7 +118,13 @@ struct ContentView: View {
                             onSelectDisplayConfiguration: setDisplayConfiguration,
                             panes: orderedPanes,
                             activePaneID: orderedPanes.first?.id,
-                            onSelectPane: bringPaneToFront
+                            onSelectPane: { pane in bringPaneToFront(pane) },
+                            autoCloseEnabled: $autoCloseSettingsMenu,
+                            onHoverChange: handleSettingsDrawerHover,
+                            demos: demoStore.demos,
+                            onSaveDemo: saveDemo,
+                            onLoadDemo: applyDemo,
+                            onDeleteDemo: deleteDemo
                         )
                             .frame(height: settingsDrawerHeight)
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -216,7 +182,7 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .disabled(panes.count >= maxPanes)
                         .help("Add a new browser pane (max \(maxPanes))")
-                        .tooltip(panes.count >= maxPanes ? "" : "⌘N", delay: 0.5, position: .bottom)
+                        .tooltip(panes.count >= maxPanes ? "\(maxPanes) max" : "⌘N", delay: 0.5, position: .bottom)
                         .foregroundColor(panes.count >= maxPanes ? .white.opacity(0.3) : .white.opacity(0.9))
                         .onHover { hovering in
                             isAddButtonHovered = hovering && panes.count < maxPanes
@@ -243,10 +209,10 @@ struct ContentView: View {
             // High z-index to ensure it's above any system UI layers
             .zIndex(10000)
             
-            // Cursor highlight overlay
+            // Cursor highlight overlay - must stay above all menus/modals
             CursorHighlightOverlay(manager: cursorHighlightManager)
                 .allowsHitTesting(false)
-                .zIndex(999)
+                .zIndex(20002)
             
             // Pane settings menus - rendered at top level for immediate updates
             if let openPaneID = openSettingsMenuPaneID,
@@ -326,6 +292,21 @@ struct ContentView: View {
                     window.toolbar = nil
                 }
             }
+        }
+        .onChange(of: isSettingsDrawerOpen) { isOpen in
+            if isOpen {
+                scheduleSettingsAutoClose()
+            } else {
+                isMouseInSettingsDrawer = false
+                cancelSettingsAutoClose()
+            }
+        }
+        .onChange(of: autoCloseSettingsMenu) { isEnabled in
+            if !isEnabled {
+                cancelSettingsAutoClose()
+                return
+            }
+            scheduleSettingsAutoClose()
         }
     }
     
@@ -425,6 +406,55 @@ struct ContentView: View {
         .id(pane.id)
     }
     
+    private func paneLayer(index: Int, pane: BrowserPaneViewModel, geometry: GeometryProxy) -> some View {
+        let orderedPaneList = orderedPanes
+        guard let paneFrame = frameManager.frames[pane.id] else { return AnyView(EmptyView()) }
+
+        let targetPosition = CGPoint(x: paneFrame.frame.midX, y: paneFrame.frame.midY)
+        let isRotated3D = displayConfiguration == .rotated3D
+        let isLayered = displayConfiguration == .layered
+        let isFocused = displayConfiguration == .focused
+
+        let depthScale: CGFloat = 1.0
+        let rotationAngle: Double = isRotated3D ? -30 : 0
+        let zDepthScale: CGFloat = isRotated3D ? max(0.0, 1.0 - (CGFloat(index) * 0.08)) : 1.0
+
+        let isDragging = draggingPaneID == pane.id
+        let offsetX = targetPosition.x - geometry.size.width / 2 + (isDragging ? dragOffset.width : 0)
+        let offsetY = targetPosition.y - geometry.size.height / 2 + (isDragging ? dragOffset.height : 0)
+
+        let paneOpacity: Double = {
+            if isRotated3D { return max(0.0, 1.0 - Double(index) * 0.08) }
+            if isLayered { return max(0.0, 1.0 - Double(index) * 0.08) }
+            if isFocused { return index == 0 ? 1.0 : 0.7 }
+            return 1.0
+        }()
+
+        let scaleEffectValue: CGFloat = isRotated3D ? zDepthScale : depthScale
+
+        let view = paneView(for: pane, frame: paneFrame.frame, zIndex: index, totalPanes: orderedPaneList.count)
+            .offset(x: offsetX, y: offsetY)
+            .scaleEffect(scaleEffectValue)
+            .rotation3DEffect(
+                .degrees(rotationAngle),
+                axis: (x: 0, y: 1, z: 0),
+                anchor: .center,
+                perspective: 0.6
+            )
+            .zIndex(Double(orderedPaneList.count - index))
+            .opacity(paneOpacity)
+            .modifier(
+                PaneCarouselEffect(
+                    position: .zero,
+                    scale: scaleEffectValue,
+                    zIndex: index,
+                    totalPanes: orderedPaneList.count
+                )
+            )
+
+        return AnyView(view)
+    }
+    
     private func recordManualLayoutChange() {
         if displayConfiguration != .manual {
             displayConfiguration = .manual
@@ -515,7 +545,6 @@ struct ContentView: View {
         let toolbarHeight = settingsDrawerHeight
         let availableWidth = size.width - (panePadding * 2)
         let availableHeight = size.height - (panePadding * 2) - toolbarHeight
-        let initialSize = PaneFrame.initial16x9Size(in: size, padding: panePadding)
         
         switch panesToArrange.count {
         case 1:
@@ -958,6 +987,18 @@ struct ContentView: View {
                 EmptyView()
             }
             .keyboardShortcut("r", modifiers: [.command])
+            
+            // Command + ]: Cycle panes counter-clockwise
+            Button(action: cyclePanesCounterClockwise) {
+                EmptyView()
+            }
+            .keyboardShortcut("]", modifiers: [.command])
+            
+            // Command + [: Cycle panes clockwise
+            Button(action: cyclePanesClockwise) {
+                EmptyView()
+            }
+            .keyboardShortcut("[", modifiers: [.command])
         }
         .frame(width: 0, height: 0)
         .opacity(0.001)
@@ -969,19 +1010,27 @@ struct ContentView: View {
         removePane(activePane)
     }
     
-    private func bringPaneToFront(_ pane: BrowserPaneViewModel) {
+    private func bringPaneToFront(_ pane: BrowserPaneViewModel, swapFrames: Bool = true, fromKeyboardCycle: Bool = false) {
         let oldOrder = orderedPaneIDs()
         guard let currentIndex = oldOrder.firstIndex(of: pane.id) else { return }
         guard currentIndex != 0 else { return }
         
-        // For rotated3D mode, don't change to manual - keep the 3D layout
-        if displayConfiguration != .rotated3D {
+        // For rotated3D mode, don't change to manual - keep the 3D layout. When cycling via keyboard, don't record manual layout change.
+        if displayConfiguration != .rotated3D && !fromKeyboardCycle {
             recordManualLayoutChange()
         }
         
         var newOrder = oldOrder
         let movedPaneID = newOrder.remove(at: currentIndex)
         newOrder.insert(movedPaneID, at: 0)
+        
+        // When not swapping frames (e.g. keyboard cycle), only update z-order so visual positions stay fixed
+        if !swapFrames {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8, blendDuration: 0.2)) {
+                paneOrder = newOrder
+            }
+            return
+        }
         
         // For rotated3D mode, panes swap both Z-order and X positions
         if displayConfiguration == .rotated3D {
@@ -1082,6 +1131,33 @@ struct ContentView: View {
         let height = max(180, proposedSize.height)
         return CGSize(width: width, height: height)
     }
+
+    private func scheduleSettingsAutoClose() {
+        cancelSettingsAutoClose()
+        guard isSettingsDrawerOpen, autoCloseSettingsMenu, !isMouseInSettingsDrawer else { return }
+
+        let workItem = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isSettingsDrawerOpen = false
+            }
+        }
+        settingsAutoCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + settingsAutoCloseDelay, execute: workItem)
+    }
+
+    private func cancelSettingsAutoClose() {
+        settingsAutoCloseWorkItem?.cancel()
+        settingsAutoCloseWorkItem = nil
+    }
+
+    private func handleSettingsDrawerHover(_ hovering: Bool) {
+        isMouseInSettingsDrawer = hovering
+        if hovering {
+            cancelSettingsAutoClose()
+        } else {
+            scheduleSettingsAutoClose()
+        }
+    }
     
     private func nextAvailableDisplayNumber() -> Int {
         let usedNumbers = Set(panes.map { $0.displayNumber })
@@ -1097,6 +1173,308 @@ struct ContentView: View {
         paneOrder = paneOrder.filter { existingIDs.contains($0) }
         for id in existingIDs where !paneOrder.contains(id) {
             paneOrder.append(id)
+        }
+    }
+
+    private func saveDemo(named name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let snapshots = captureDemoSnapshots()
+        demoStore.save(name: trimmedName, displayConfiguration: displayConfiguration, panes: snapshots)
+    }
+    
+    private func deleteDemo(_ demo: DemoLayout) {
+        demoStore.remove(id: demo.id)
+    }
+    
+    private func applyDemo(_ demo: DemoLayout) {
+        isApplyingDemo = true
+        openSettingsMenuPaneID = nil
+        draggingPaneID = nil
+        dragOffset = .zero
+        dragStartFrame = nil
+        
+        for pane in panes {
+            pane.isSettingsMenuOpen = false
+            if let webView = pane.webView {
+                webView.stopLoading()
+                webView.navigationDelegate = nil
+            }
+        }
+        
+        panes.removeAll()
+        paneOrder.removeAll()
+        frameManager.frames = [:]
+        displayConfiguration = demo.displayConfiguration
+        
+        let snapshots = Array(demo.panes.prefix(maxPanes))
+        var usedDisplayNumbers = Set<Int>()
+        var newPanes: [BrowserPaneViewModel] = []
+        
+        for (index, snapshot) in snapshots.enumerated() {
+            let pane = BrowserPaneViewModel()
+            pane.shouldFocusURL = false
+            pane.displayNumber = resolvedDisplayNumber(snapshot.displayNumber, usedNumbers: &usedDisplayNumbers)
+            pane.showBorder = snapshot.showBorder
+            
+            let colorIndex = min(max(snapshot.borderColorIndex, 0), BrowserPaneViewModel.borderColors.count - 1)
+            pane.borderColorIndex = colorIndex
+            pane.paneTitle = snapshot.title
+            pane.zoomSetting = snapshot.zoomSetting
+            
+            let trimmedURL = snapshot.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedURL.isEmpty {
+                pane.loadURL(trimmedURL)
+            }
+            
+            newPanes.append(pane)
+            
+            if demo.displayConfiguration == .manual {
+                let frame = snapshot.frame.rect
+                frameManager.setFrame(id: pane.id, frame: PaneFrame(id: pane.id, frame: frame))
+            } else if frameManager.frames[pane.id] == nil {
+                let fallback = defaultCarouselFrame(forSlot: index)
+                frameManager.setFrame(id: pane.id, frame: PaneFrame(id: pane.id, frame: fallback))
+            }
+        }
+        
+        panes = newPanes
+        paneOrder = newPanes.map { $0.id }
+        
+        if displayConfiguration != .manual {
+            applyCurrentDisplayConfiguration()
+        }
+        
+        DispatchQueue.main.async {
+            isApplyingDemo = false
+        }
+    }
+    
+    private func captureDemoSnapshots() -> [DemoPaneSnapshot] {
+        orderedPanes.enumerated().map { index, pane in
+            let frame = frameManager.frames[pane.id]?.frame ?? defaultCarouselFrame(forSlot: index)
+            return DemoPaneSnapshot(
+                title: pane.paneTitle,
+                showBorder: pane.showBorder,
+                borderColorIndex: pane.borderColorIndex,
+                zoomSetting: pane.zoomSetting,
+                displayNumber: pane.displayNumber,
+                url: pane.currentURL,
+                frame: DemoFrame(rect: frame)
+            )
+        }
+    }
+    
+    private func resolvedDisplayNumber(_ requested: Int, usedNumbers: inout Set<Int>) -> Int {
+        if requested > 0, requested <= maxPanes, !usedNumbers.contains(requested) {
+            usedNumbers.insert(requested)
+            return requested
+        }
+        
+        var candidate = 1
+        while usedNumbers.contains(candidate) && candidate <= maxPanes {
+            candidate += 1
+        }
+        if candidate > maxPanes {
+            candidate = maxPanes
+        }
+        usedNumbers.insert(candidate)
+        return candidate
+    }
+    
+    // MARK: - Visual position pane cycling (⌘] / ⌘[)
+    // Uses current frame positions to compute a clockwise order:
+    // top-left → top-right → bottom-right → bottom-left (wrapping as needed).
+    
+    private func cyclePanesClockwise() {
+        cyclePanes(.clockwise)
+    }
+    
+    private func cyclePanesCounterClockwise() {
+        cyclePanes(.counterClockwise)
+    }
+    
+    private enum PaneCycleDirection {
+        case clockwise
+        case counterClockwise
+    }
+    
+    private func cyclePanes(_ direction: PaneCycleDirection) {
+        let visualOrder = visualPaneOrder()
+        let count = visualOrder.count
+        guard count >= 2 else { return }
+        guard let primaryPane = orderedPanes.first,
+              let primaryIndex = visualOrder.firstIndex(where: { $0.id == primaryPane.id }) else { return }
+        
+        let nextIndex: Int
+        let frameShift: Int
+        switch direction {
+        case .clockwise:
+            nextIndex = (primaryIndex + 1) % count
+            // Shift panes counter-clockwise so the next pane moves into the primary slot.
+            frameShift = -1
+        case .counterClockwise:
+            nextIndex = (primaryIndex - 1 + count) % count
+            // Shift panes clockwise so the previous pane moves into the primary slot.
+            frameShift = 1
+        }
+        
+        let paneToFront = visualOrder[nextIndex]
+        if displayConfiguration == .rotated3D {
+            rotateRotated3DStack(direction: direction)
+        } else if displayConfiguration == .layered {
+            rotateLayeredStack(direction: direction)
+        } else {
+            rotatePaneFrames(in: visualOrder, shift: frameShift)
+            bringPaneToFront(paneToFront, swapFrames: false, fromKeyboardCycle: true)
+        }
+    }
+    
+    private func visualPaneOrder() -> [BrowserPaneViewModel] {
+        let panesWithFrames = orderedPanes.compactMap { pane -> (BrowserPaneViewModel, CGRect)? in
+            guard let frame = frameManager.frames[pane.id]?.frame else { return nil }
+            return (pane, frame)
+        }
+        
+        guard panesWithFrames.count == orderedPanes.count else {
+            return orderedPanes
+        }
+        
+        let centers = panesWithFrames.map { CGPoint(x: $0.1.midX, y: $0.1.midY) }
+        let centerX = centers.reduce(0) { $0 + $1.x } / CGFloat(centers.count)
+        let centerY = centers.reduce(0) { $0 + $1.y } / CGFloat(centers.count)
+        let centroid = CGPoint(x: centerX, y: centerY)
+        
+        let ordered = panesWithFrames.map { pane, frame -> (pane: BrowserPaneViewModel, angle: Double, distance: Double, center: CGPoint) in
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            let dx = center.x - centroid.x
+            let dy = center.y - centroid.y
+            let angle = atan2(dy, dx) // y axis increases downward; ascending angle yields clockwise order
+            let distance = hypot(dx, dy)
+            return (pane, angle, distance, center)
+        }
+        .sorted { lhs, rhs in
+            if abs(lhs.angle - rhs.angle) > 0.0001 {
+                return lhs.angle < rhs.angle
+            }
+            if abs(lhs.distance - rhs.distance) > 0.0001 {
+                return lhs.distance < rhs.distance
+            }
+            if abs(lhs.center.y - rhs.center.y) > 0.0001 {
+                return lhs.center.y < rhs.center.y
+            }
+            return lhs.center.x < rhs.center.x
+        }
+        
+        return ordered.map { $0.pane }
+    }
+    
+    private func rotatePaneFrames(in ordered: [BrowserPaneViewModel], shift: Int) {
+        let count = ordered.count
+        guard count >= 2 else { return }
+        
+        let frames = ordered.enumerated().map { index, pane in
+            frameManager.frames[pane.id]?.frame ?? defaultCarouselFrame(forSlot: index)
+        }
+        let animation = Animation.spring(response: 0.7, dampingFraction: 0.8, blendDuration: 0.3)
+        
+        withAnimation(animation) {
+            for (index, pane) in ordered.enumerated() {
+                let sourceIndex = (index + shift + count) % count
+                let frame = frames[sourceIndex]
+                if var existingFrame = frameManager.frames[pane.id] {
+                    existingFrame.frame = frame
+                    frameManager.setFrame(id: pane.id, frame: existingFrame)
+                } else {
+                    frameManager.setFrame(id: pane.id, frame: PaneFrame(id: pane.id, frame: frame))
+                }
+            }
+        }
+    }
+
+    private func rotateRotated3DStack(direction: PaneCycleDirection) {
+        let currentOrder = orderedPaneIDs()
+        let count = currentOrder.count
+        guard count >= 2 else { return }
+
+        var newOrder = currentOrder
+        switch direction {
+        case .clockwise:
+            // Move primary (front) to the back.
+            let front = newOrder.removeFirst()
+            newOrder.append(front)
+        case .counterClockwise:
+            // Move farthest back to the front.
+            if let back = newOrder.popLast() {
+                newOrder.insert(back, at: 0)
+            }
+        }
+
+        applyRotated3DOrder(newOrder)
+    }
+
+    private func applyRotated3DOrder(_ order: [UUID]) {
+        let count = order.count
+        guard count >= 1 else { return }
+
+        let xOffsetPerLayer: CGFloat = 100.0
+        let totalSpan = CGFloat(count - 1) * xOffsetPerLayer
+        let baseCenterX = (containerSize.width / 2) - (totalSpan / 2) - (containerSize.width * 0.03)
+
+        let frameInfo: [(y: CGFloat, width: CGFloat, height: CGFloat)] = order.map { paneID in
+            if let frame = frameManager.frames[paneID]?.frame {
+                return (frame.origin.y, frame.width, frame.height)
+            }
+            let fallback = defaultCarouselFrame(forSlot: 0)
+            return (fallback.origin.y, fallback.width, fallback.height)
+        }
+
+        let animation = Animation.spring(response: 0.7, dampingFraction: 0.8, blendDuration: 0.3)
+        withAnimation(animation) {
+            paneOrder = order
+            for (newIndex, paneID) in order.enumerated() {
+                let xOffset = CGFloat(newIndex) * xOffsetPerLayer
+                let centerX = baseCenterX + xOffset
+                let info = frameInfo[newIndex]
+                if var paneFrame = frameManager.frames[paneID] {
+                    paneFrame.frame = CGRect(
+                        x: centerX - info.width / 2,
+                        y: info.y,
+                        width: info.width,
+                        height: info.height
+                    )
+                    frameManager.setFrame(id: paneID, frame: paneFrame)
+                }
+            }
+        }
+    }
+
+    private func rotateLayeredStack(direction: PaneCycleDirection) {
+        let currentOrder = orderedPaneIDs()
+        let count = currentOrder.count
+        guard count >= 2 else { return }
+
+        var newOrder = currentOrder
+        switch direction {
+        case .clockwise:
+            let front = newOrder.removeFirst()
+            newOrder.append(front)
+        case .counterClockwise:
+            if let back = newOrder.popLast() {
+                newOrder.insert(back, at: 0)
+            }
+        }
+
+        applyLayeredOrder(newOrder)
+    }
+
+    private func applyLayeredOrder(_ order: [UUID]) {
+        guard !order.isEmpty else { return }
+        let animation = Animation.spring(response: 0.7, dampingFraction: 0.8, blendDuration: 0.3)
+
+        withAnimation(animation) {
+            paneOrder = order
+            arrangePanesLayered(in: containerSize)
         }
     }
 }
