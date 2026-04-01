@@ -164,7 +164,36 @@ The app uses a flexible frame management system:
 1. Download the latest release from the [Releases](https://github.com/yourusername/Demolish/releases) page
 2. Extract the `.app` bundle
 3. Move `Demolish.app` to your Applications folder
-4. Right-click and select "Open" (first launch only, to bypass Gatekeeper)
+4. Open normally (no Gatekeeper bypass needed when signed + notarized)
+
+### Releasing a Trusted macOS Build
+
+Use the release script to archive, sign with Developer ID, notarize, staple, and verify:
+
+```bash
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="your-notary-profile" \
+./scripts/release-macos.sh
+```
+
+To repair an already-built `.app` (for example, a previously archived build):
+
+```bash
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="your-notary-profile" \
+EXISTING_APP_PATH="/absolute/path/to/Demolish.app" \
+./scripts/release-macos.sh
+```
+
+Requirements:
+- A valid (not revoked) `Developer ID Application` certificate installed in Keychain
+- A notarytool keychain profile configured (example: `xcrun notarytool store-credentials ...`)
+
+The script fails fast if the signing certificate is revoked and only completes after:
+- `codesign --verify --deep --strict` passes
+- notarization succeeds
+- stapling succeeds
+- `spctl --assess --type execute` passes
 
 ---
 
