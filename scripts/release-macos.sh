@@ -119,4 +119,17 @@ xcrun stapler validate "${APP_PATH}"
 echo "Running Gatekeeper assessment..."
 spctl --assess --type execute --verbose=4 "${APP_PATH}"
 
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "unknown")
+ZIP_NAME="Demolish-${VERSION}.zip"
+ZIP_PATH="${RELEASE_DIR:-$(dirname "${APP_PATH}")}/${ZIP_NAME}"
+
+echo "Creating release zip for GitHub..."
+ditto -c -k --keepParent "${APP_PATH}" "${ZIP_PATH}"
+
+echo ""
 echo "Release complete: ${APP_PATH}"
+echo "Release zip:      ${ZIP_PATH}"
+echo "Version:          ${VERSION}"
+echo ""
+echo "To publish, create a GitHub release tagged v${VERSION} and attach:"
+echo "  ${ZIP_PATH}"

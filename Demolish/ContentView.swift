@@ -22,6 +22,7 @@ struct ContentView: View {
     @StateObject private var frameManager = PaneFrameManager()
     @StateObject private var cursorHighlightManager = CursorHighlightManager()
     @StateObject private var demoStore = DemoStore()
+    @StateObject private var updateChecker = AppUpdateChecker()
     @State private var containerSize: CGSize = .zero
     @State private var isSettingsDrawerOpen = false
     @State private var isAddButtonHovered = false
@@ -214,6 +215,16 @@ struct ContentView: View {
                 .allowsHitTesting(false)
                 .zIndex(20002)
             
+            // Update banner at the bottom
+            if updateChecker.isUpdateVisible {
+                VStack {
+                    Spacer()
+                    UpdateBannerView(updateChecker: updateChecker)
+                }
+                .zIndex(20001)
+                .animation(.spring(response: 0.5, dampingFraction: 0.85), value: updateChecker.isUpdateVisible)
+            }
+            
             // Pane settings menus - rendered at top level for immediate updates
             if let openPaneID = openSettingsMenuPaneID,
                let pane = panes.first(where: { $0.id == openPaneID }),
@@ -282,8 +293,8 @@ struct ContentView: View {
                 syncPaneOrderWithPanes()
             }
             
-            // Backup: Ensure window configuration is applied when view appears
-            // This helps catch cases where the window configuration helper might miss the window
+            updateChecker.startChecking()
+            
             DispatchQueue.main.async {
                 if let window = NSApplication.shared.windows.first {
                     window.titleVisibility = .hidden
