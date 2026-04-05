@@ -42,6 +42,9 @@ struct ContentView: View {
     private let panePadding: CGFloat = 16
     private let settingsDrawerHeight: CGFloat = 40
     private let settingsAutoCloseDelay: TimeInterval = 15
+    private let paneSettingsMenuWidth: CGFloat = 200
+    private let paneToolbarPadding: CGFloat = 8
+    private let paneNumberMenuInset: CGFloat = 16
     
     var body: some View {
         ZStack(alignment: .top) {
@@ -229,23 +232,26 @@ struct ContentView: View {
             if let openPaneID = openSettingsMenuPaneID,
                let pane = panes.first(where: { $0.id == openPaneID }),
                let paneFrame = frameManager.frames[pane.id] {
-                PaneSettingsMenu(
-                    viewModel: pane,
-                    onDismiss: {
-                        // Close menu without animation to avoid flicker
-                        openSettingsMenuPaneID = nil
-                        pane.isSettingsMenuOpen = false
-                    }
-                )
-                .frame(width: 200, alignment: .top) // Top-aligned so it expands downward
-                .offset(
-                    x: paneFrame.frame.maxX - 757 - 200, // Position right edge (82px + 675px left shift)
-                    y: paneFrame.frame.minY + 4  // Top edge position (10px down from -6)
-                )
-                .transition(.asymmetric(
-                    insertion: .offset(y: 10).combined(with: .opacity).animation(.easeInOut(duration: 0.2)),
-                    removal: .offset(y: -10).combined(with: .opacity).animation(.easeInOut(duration: 0.2))
-                ))
+                ZStack(alignment: .topLeading) {
+                    PaneSettingsMenu(
+                        viewModel: pane,
+                        onDismiss: {
+                            // Close menu without animation to avoid flicker
+                            openSettingsMenuPaneID = nil
+                            pane.isSettingsMenuOpen = false
+                        }
+                    )
+                    .frame(width: paneSettingsMenuWidth, alignment: .top)
+                    .offset(
+                        x: paneSettingsMenuOriginX(for: pane, frame: paneFrame.frame),
+                        y: paneSettingsMenuOriginY(for: paneFrame.frame)
+                    )
+                    .transition(.asymmetric(
+                        insertion: .offset(y: 10).combined(with: .opacity).animation(.easeInOut(duration: 0.2)),
+                        removal: .offset(y: -10).combined(with: .opacity).animation(.easeInOut(duration: 0.2))
+                    ))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .zIndex(10001) // Above everything else
             }
             
@@ -1141,6 +1147,17 @@ struct ContentView: View {
         let width = max(320, proposedSize.width)
         let height = max(180, proposedSize.height)
         return CGSize(width: width, height: height)
+    }
+
+    private func paneSettingsMenuOriginX(for pane: BrowserPaneViewModel, frame: CGRect) -> CGFloat {
+        let trailingInset = paneToolbarPadding + (panes.count >= 2 && pane.displayNumber > 0 ? paneNumberMenuInset : 0)
+        let anchoredX = frame.maxX - paneSettingsMenuWidth - trailingInset
+        let maxX = max(0, containerSize.width - paneSettingsMenuWidth)
+        return min(max(anchoredX, 0), maxX)
+    }
+
+    private func paneSettingsMenuOriginY(for frame: CGRect) -> CGFloat {
+        min(max(frame.minY + paneToolbarPadding, 0), max(0, containerSize.height))
     }
 
     private func scheduleSettingsAutoClose() {
