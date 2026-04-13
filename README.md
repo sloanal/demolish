@@ -140,7 +140,7 @@ The app uses a flexible frame management system:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/Demolish.git
+   git clone https://github.com/sloanal/demolish.git
    cd Demolish
    ```
 
@@ -161,39 +161,54 @@ The app uses a flexible frame management system:
 
 ### Installation (Pre-built)
 
-1. Download the latest release from the [Releases](https://github.com/yourusername/Demolish/releases) page
+1. Download the latest release from the [Releases](https://github.com/sloanal/demolish/releases) page
 2. Extract the `.app` bundle
 3. Move `Demolish.app` to your Applications folder
 4. Open normally (no Gatekeeper bypass needed when signed + notarized)
 
-### Releasing a Trusted macOS Build
+### Publishing a New Release
 
-Use the release script to archive, sign with Developer ID, notarize, staple, and verify:
+Users running Demolish 1.3+ get an in-app update banner automatically when a new version is published. Follow these steps for each release:
+
+1. **Bump the version** — In Xcode, update `MARKETING_VERSION` in the project settings (e.g. `1.4` → `1.5`)
+2. **Archive** — In Xcode, select **Product → Archive**
+3. **Distribute** — In the Organizer, click **Distribute App → Direct Distribution**. Xcode will sign with your Developer ID and submit to Apple's notary service automatically.
+4. **Zip the `.app`** — Once exported, zip the `.app` bundle (e.g. `Demolish-1.5.zip`)
+5. **Create a GitHub Release** — Go to https://github.com/sloanal/demolish/releases/new
+   - **Tag**: the version number (e.g. `v1.5` or `1.5`)
+   - **Title**: e.g. `Demolish 1.5`
+   - **Description**: release notes (optional)
+   - **Attach the zip** as a release asset
+6. **(Optional)** Upload the zip to your website download page as well
+
+The app checks for updates on launch and hourly. When it finds a release with a version tag newer than the running version and a `.zip` asset attached, it shows a banner prompting the user to update. Clicking "Update & Restart" downloads, extracts, replaces the app, and relaunches — all in one step.
+
+> **Note:** Users on versions older than 1.3 don't have the updater and will need to download the new version manually one last time.
+
+### Releasing via the Command Line (Alternative)
+
+The release script handles archiving, signing, notarization, stapling, and zip creation in one step:
 
 ```bash
 DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="your-notary-profile" \
+NOTARY_PROFILE="Demolish" \
 ./scripts/release-macos.sh
 ```
 
-To repair an already-built `.app` (for example, a previously archived build):
+To re-sign and notarize an already-exported `.app`:
 
 ```bash
 DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="your-notary-profile" \
+NOTARY_PROFILE="Demolish" \
 EXISTING_APP_PATH="/absolute/path/to/Demolish.app" \
 ./scripts/release-macos.sh
 ```
 
-Requirements:
-- A valid (not revoked) `Developer ID Application` certificate installed in Keychain
-- A notarytool keychain profile configured (example: `xcrun notarytool store-credentials ...`)
+The script produces a `Demolish-{version}.zip` ready to attach to a GitHub Release.
 
-The script fails fast if the signing certificate is revoked and only completes after:
-- `codesign --verify --deep --strict` passes
-- notarization succeeds
-- stapling succeeds
-- `spctl --assess --type execute` passes
+Requirements:
+- A valid `Developer ID Application` certificate in Keychain
+- A notarytool keychain profile (`xcrun notarytool store-credentials "Demolish" --apple-id ... --team-id ...`)
 
 ---
 
@@ -417,8 +432,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📧 Contact & Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/Demolish/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/Demolish/discussions)
+- **Issues**: [GitHub Issues](https://github.com/sloanal/demolish/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/sloanal/demolish/discussions)
 - **Email**: your-email@example.com
 
 ---
