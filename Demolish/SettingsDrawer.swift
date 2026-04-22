@@ -699,6 +699,8 @@ struct SettingsDrawer: View {
         help: String
     ) -> some View {
         // Map configuration to keyboard shortcut
+        // View-mode shortcuts are Shift-qualified so base Cmd+J/K/L/; remain available
+        // to web content (e.g. Cmd+K for website command palettes).
         let shortcutKey: String?
         switch configuration {
         case .tiled:
@@ -712,8 +714,8 @@ struct SettingsDrawer: View {
         case .manual:
             shortcutKey = nil
         }
-        
-        let tooltipText = shortcutKey != nil ? "⌘\(shortcutKey!)" : nil
+
+        let tooltipText = shortcutKey != nil ? "⌘⇧\(shortcutKey!)" : nil
         let isSelected = displayConfiguration == configuration
         let isHovered = hoveredConfiguration == configuration
         

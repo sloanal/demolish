@@ -66,8 +66,8 @@ struct BrowserPaneView: View {
                     NoFocusRingTextField(
                         text: $urlInput,
                         placeholder: "Enter URL",
-                        onSubmit: {
-                            viewModel.loadURL(urlInput)
+                        onSubmit: { submittedURL in
+                            viewModel.loadURL(submittedURL)
                             isURLFieldFocused = false
                             isTextFieldFocused = false
                         },
@@ -274,7 +274,7 @@ struct ReloadButton: View {
         }
         .buttonStyle(.plain)
         .help(viewModel.isLoading ? "Stop loading" : "Reload")
-        .tooltip("⌘R", delay: 0.5, position: .top)
+        .tooltip("⌘⇧R", delay: 0.5, position: .top)
         .onHover { hovering in
             isHovered = hovering
             if hovering {
@@ -737,7 +737,7 @@ struct PaneSettingsMenu: View {
 struct NoFocusRingTextField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let onSubmit: () -> Void
+    let onSubmit: (String) -> Void
     @Binding var isFocused: Bool
     
     func makeNSView(context: Context) -> NSTextField {
@@ -787,9 +787,9 @@ struct NoFocusRingTextField: NSViewRepresentable {
     class Coordinator: NSObject, NSTextFieldDelegate {
         var textBinding: Binding<String>
         var isFocusedBinding: Binding<Bool>
-        var onSubmit: () -> Void
+        var onSubmit: (String) -> Void
         
-        init(text: Binding<String>, isFocused: Binding<Bool>, onSubmit: @escaping () -> Void) {
+        init(text: Binding<String>, isFocused: Binding<Bool>, onSubmit: @escaping (String) -> Void) {
             self.textBinding = text
             self.isFocusedBinding = isFocused
             self.onSubmit = onSubmit
@@ -803,14 +803,20 @@ struct NoFocusRingTextField: NSViewRepresentable {
         
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                // Handle Enter key - trigger onSubmit
-                onSubmit()
+                // Submit the live editor contents so a just-pasted URL is not lost
+                // before SwiftUI state has a chance to catch up.
+                let submittedText = textView.string
+                textBinding.wrappedValue = submittedText
+                onSubmit(submittedText)
                 return true // Consume the event
             }
             return false
         }
         
         func controlTextDidEndEditing(_ notification: Notification) {
+            if let textField = notification.object as? NSTextField {
+                textBinding.wrappedValue = textField.stringValue
+            }
             // Update focus state when editing ends
             isFocusedBinding.wrappedValue = false
         }
