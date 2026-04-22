@@ -274,7 +274,7 @@ struct ReloadButton: View {
         }
         .buttonStyle(.plain)
         .help(viewModel.isLoading ? "Stop loading" : "Reload")
-        .tooltip("⌘R", delay: 0.5, position: .top)
+        .tooltip("⌘⇧R", delay: 0.5, position: .top)
         .onHover { hovering in
             isHovered = hovering
             if hovering {

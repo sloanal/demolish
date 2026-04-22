@@ -37,6 +37,9 @@ struct ContentView: View {
     @State private var settingsAutoCloseWorkItem: DispatchWorkItem? = nil
     @State private var isMouseInSettingsDrawer: Bool = false
     @State private var isApplyingDemo: Bool = false
+    // When true, Demolish's app-level keyboard shortcuts are suspended so all keystrokes
+    // (including Cmd+K, Cmd+L, etc.) pass through to the focused WKWebView. Toggle with ⌘.
+    @State private var isBrowserCaptureMode: Bool = false
     @Namespace private var paneNamespace
     private let maxPanes = 4
     private let panePadding: CGFloat = 16
@@ -226,6 +229,23 @@ struct ContentView: View {
                 }
                 .zIndex(20001)
                 .animation(.spring(response: 0.5, dampingFraction: 0.85), value: updateChecker.isUpdateVisible)
+            }
+
+            // Browser capture mode indicator — small pill bottom-trailing while active.
+            // Signals to the user that Demolish shortcuts are suspended and the web view owns keys.
+            if isBrowserCaptureMode {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        BrowserCaptureIndicator(onExit: toggleBrowserCaptureMode)
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 16)
+                    }
+                }
+                .zIndex(20003)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .animation(.easeInOut(duration: 0.18), value: isBrowserCaptureMode)
             }
             
             // Pane settings menus - rendered at top level for immediate updates
@@ -923,99 +943,111 @@ struct ContentView: View {
     @ViewBuilder
     private var paneKeyboardShortcutOverlay: some View {
         ZStack {
-            // Command + N: New pane
-            Button(action: addPane) {
+            // Command + . : Toggle browser capture mode (always available, even when capturing)
+            Button(action: toggleBrowserCaptureMode) {
                 EmptyView()
             }
-            .keyboardShortcut("n", modifiers: [.command])
-            
-            // Command + Shift + W: Close highlighted/active pane
-            Button(action: closeActivePane) {
-                EmptyView()
-            }
-            .keyboardShortcut("w", modifiers: [.command, .shift])
-            
-            // Command + 0: Toggle settings drawer
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isSettingsDrawerOpen.toggle()
+            .keyboardShortcut(".", modifiers: [.command])
+
+            // When capture mode is on, all other app shortcuts are disabled so keystrokes
+            // (including Cmd+K, Cmd+J, Cmd+L, etc.) fall through to the focused WKWebView.
+            if !isBrowserCaptureMode {
+                // Command + N: New pane
+                Button(action: addPane) {
+                    EmptyView()
                 }
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("0", modifiers: [.command])
-            
-            // Command + 9: Toggle cursor highlight
-            Button(action: {
-                cursorHighlightManager.isEnabled.toggle()
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("9", modifiers: [.command])
-            
-            // Command + J, K, L, ;: Toggle view modes
-            // J = Tiled, K = Layered, L = Focused, ; = Rotated 3D
-            Button(action: {
-                setDisplayConfiguration(.tiled)
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("j", modifiers: [.command])
-            
-            Button(action: {
-                setDisplayConfiguration(.layered)
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("k", modifiers: [.command])
-            
-            Button(action: {
-                setDisplayConfiguration(.focused)
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("l", modifiers: [.command])
-            
-            Button(action: {
-                setDisplayConfiguration(.rotated3D)
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut(";", modifiers: [.command])
-            
-            // Command + 1, 2, 3, 4: Select panes by display number
-            ForEach(orderedPanes) { pane in
-                if pane.displayNumber > 0 && pane.displayNumber <= 4 {
-                    Button(action: {
-                        bringPaneToFront(pane)
-                    }) {
-                        EmptyView()
+                .keyboardShortcut("n", modifiers: [.command])
+
+                // Command + Shift + W: Close highlighted/active pane
+                Button(action: closeActivePane) {
+                    EmptyView()
+                }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+
+                // Command + 0: Toggle settings drawer
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isSettingsDrawerOpen.toggle()
                     }
-                    .keyboardShortcut(KeyEquivalent(Character(String(pane.displayNumber))), modifiers: [.command])
+                }) {
+                    EmptyView()
                 }
-            }
-            
-            // Command + R: Refresh the primary pane
-            Button(action: {
-                if let primaryPane = orderedPanes.first {
-                    primaryPane.reload()
+                .keyboardShortcut("0", modifiers: [.command])
+
+                // Command + 9: Toggle cursor highlight
+                Button(action: {
+                    cursorHighlightManager.isEnabled.toggle()
+                }) {
+                    EmptyView()
                 }
-            }) {
-                EmptyView()
+                .keyboardShortcut("9", modifiers: [.command])
+
+                // Command + Shift + J/K/L/;: Toggle view modes
+                // (Shift-qualified so Cmd+J/K/L/; stay available to websites like Linear, Notion, etc.)
+                // J = Tiled, K = Layered, L = Focused, ; = Rotated 3D
+                Button(action: {
+                    setDisplayConfiguration(.tiled)
+                }) {
+                    EmptyView()
+                }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+
+                Button(action: {
+                    setDisplayConfiguration(.layered)
+                }) {
+                    EmptyView()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+
+                Button(action: {
+                    setDisplayConfiguration(.focused)
+                }) {
+                    EmptyView()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                Button(action: {
+                    setDisplayConfiguration(.rotated3D)
+                }) {
+                    EmptyView()
+                }
+                .keyboardShortcut(";", modifiers: [.command, .shift])
+
+                // Command + 1, 2, 3, 4: Select panes by display number
+                ForEach(orderedPanes) { pane in
+                    if pane.displayNumber > 0 && pane.displayNumber <= 4 {
+                        Button(action: {
+                            bringPaneToFront(pane)
+                        }) {
+                            EmptyView()
+                        }
+                        .keyboardShortcut(KeyEquivalent(Character(String(pane.displayNumber))), modifiers: [.command])
+                    }
+                }
+
+                // Command + Shift + R: Refresh the primary pane
+                // (Shift-qualified so Cmd+R passes through to web content that uses it.)
+                Button(action: {
+                    if let primaryPane = orderedPanes.first {
+                        primaryPane.reload()
+                    }
+                }) {
+                    EmptyView()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                // Command + Shift + ]: Cycle panes counter-clockwise
+                Button(action: cyclePanesCounterClockwise) {
+                    EmptyView()
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+
+                // Command + Shift + [: Cycle panes clockwise
+                Button(action: cyclePanesClockwise) {
+                    EmptyView()
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
             }
-            .keyboardShortcut("r", modifiers: [.command])
-            
-            // Command + ]: Cycle panes counter-clockwise
-            Button(action: cyclePanesCounterClockwise) {
-                EmptyView()
-            }
-            .keyboardShortcut("]", modifiers: [.command])
-            
-            // Command + [: Cycle panes clockwise
-            Button(action: cyclePanesClockwise) {
-                EmptyView()
-            }
-            .keyboardShortcut("[", modifiers: [.command])
         }
         .frame(width: 0, height: 0)
         .opacity(0.001)
@@ -1025,6 +1057,19 @@ struct ContentView: View {
         // Close the highlighted/active pane (first in orderedPanes)
         guard let activePane = orderedPanes.first else { return }
         removePane(activePane)
+    }
+
+    private func toggleBrowserCaptureMode() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isBrowserCaptureMode.toggle()
+        }
+        // When entering capture mode, hand first responder to the active pane's web view
+        // so the next keystroke is actually received by the page.
+        if isBrowserCaptureMode, let activeWebView = orderedPanes.first?.webView {
+            DispatchQueue.main.async {
+                activeWebView.window?.makeFirstResponder(activeWebView)
+            }
+        }
     }
     
     private func bringPaneToFront(_ pane: BrowserPaneViewModel, swapFrames: Bool = true, fromKeyboardCycle: Bool = false) {
@@ -1310,7 +1355,7 @@ struct ContentView: View {
         return candidate
     }
     
-    // MARK: - Visual position pane cycling (⌘] / ⌘[)
+    // MARK: - Visual position pane cycling (⌘⇧] / ⌘⇧[)
     // Uses current frame positions to compute a clockwise order:
     // top-left → top-right → bottom-right → bottom-left (wrapping as needed).
     
@@ -1503,6 +1548,49 @@ struct ContentView: View {
         withAnimation(animation) {
             paneOrder = order
             arrangePanesLayered(in: containerSize)
+        }
+    }
+}
+
+// Small pill shown while browser capture mode is active. Clicking it (or pressing ⌘.) exits.
+private struct BrowserCaptureIndicator: View {
+    let onExit: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onExit) {
+            HStack(spacing: 6) {
+                Image(systemName: "keyboard.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Browser keys")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("⌘.")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .opacity(0.75)
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(Color.accentColor.opacity(isHovered ? 0.95 : 0.85))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .help("Browser capture mode is on — Demolish shortcuts are paused. Click or press ⌘. to exit.")
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+                NSCursor.arrow.set()
+            }
         }
     }
 }
