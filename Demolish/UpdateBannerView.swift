@@ -23,6 +23,7 @@ struct UpdateBannerView: View {
             Spacer()
 
             if case .failed = updateChecker.state {
+                showLogButton
                 retryButton
             }
 
@@ -118,6 +119,24 @@ struct UpdateBannerView: View {
                 NSCursor.pop()
                 NSCursor.arrow.set()
             }
+        }
+    }
+
+    private var showLogButton: some View {
+        Button(action: { updateChecker.revealLogInFinder() }) {
+            Text("Show Log")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(0.1))
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop(); NSCursor.arrow.set() }
         }
     }
 
