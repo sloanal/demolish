@@ -394,6 +394,34 @@ struct WebViewWrapper: NSViewRepresentable {
             let response = alert.runModal()
             completionHandler(response == .alertFirstButtonReturn)
         }
+
+        // Present the system file browser when the page requests a file (e.g. <input type="file">).
+        // Without implementing this WKUIDelegate method, WebKit never shows the open panel and the
+        // click silently does nothing, which makes it look like Demolish is blocking the file browser.
+        func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+            let openPanel = NSOpenPanel()
+            openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            openPanel.canChooseDirectories = parameters.allowsDirectories
+            openPanel.canChooseFiles = true
+            openPanel.canCreateDirectories = false
+            openPanel.resolvesAliases = true
+
+            let handleResponse: (NSApplication.ModalResponse) -> Void = { response in
+                if response == .OK {
+                    completionHandler(openPanel.urls)
+                } else {
+                    completionHandler(nil)
+                }
+            }
+
+            // Prefer presenting as a sheet attached to the pane's window so the selection
+            // returns into the originating pane. Fall back to a modal panel if there is no window.
+            if let window = webView.window {
+                openPanel.beginSheetModal(for: window, completionHandler: handleResponse)
+            } else {
+                handleResponse(openPanel.runModal())
+            }
+        }
     }
 }
 
